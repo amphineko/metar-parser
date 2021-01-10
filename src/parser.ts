@@ -75,7 +75,7 @@ export class METARParser extends EmbeddedActionsParser {
      * 15.1.1 Code name METAR or SPECI
      */
     protected readonly reportTypeGroup = this.RULE('reportTypeGroup', () => {
-        const token = this.CONSUME(Lexer.ReportType)
+        const token = this.CONSUME(Lexer.Type)
         return this.ACTION(() => token.image as ReportType)
     })
 
