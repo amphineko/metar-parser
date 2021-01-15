@@ -16,7 +16,7 @@ interface Wind {
     gust?: number
     unit: string
     variable: boolean
-    variation: { low: number, high: number }
+    variation?: { low: number, high: number }
 }
 
 export interface METAR {
@@ -75,32 +75,44 @@ export class METARParser extends EmbeddedActionsParser {
      * 15.1.1 Code name METAR or SPECI
      */
     protected readonly reportTypeGroup = this.RULE('reportTypeGroup', () => {
-        const token = this.CONSUME(Lexer.Type)
+        const token = this.or(0, [
+            { ALT: () => this.consume(0, Lexer.METAR) },
+            { ALT: () => this.consume(0, Lexer.SPECI) }
+        ])
         return this.ACTION(() => token.image as ReportType)
     })
 
     /**
      * 15.2 Reporting Station Identifier
      */
-    protected readonly stationIdentifierGroup = this.RULE('stationIdentifierGroup', () => {
-        const token = this.CONSUME(Lexer.StationIdentifier)
-        return this.ACTION(() => token.image)
-    })
+    protected readonly stationIdentifierGroup = this.RULE('stationIdentifierGroup', () => this.or(0, [{
+        ALT: () => {
+            const token = this.consume(0, Lexer.Identifier)
+            return this.ACTION(() => token.image)
+        },
+        GATE: () => this.LA(1).image.length === 4
+    }]))
 
     /**
      * 15.3 Timestamp
      */
-    protected readonly timestampGroup = this.RULE('timestampGroup', () => {
-        const token = this.CONSUME(Lexer.Timestamp)
-        return this.ACTION(() => {
-            const result: Timestamp = {
-                date: parseInt(token.image.substr(0, 2)),
-                hours: parseInt(token.image.substr(2, 2)),
-                minutes: parseInt(token.image.substr(4, 2))
-            }
-            return result
-        })
-    })
+    protected readonly timestampGroup = this.RULE('timestampGroup', () => this.or(0, [{
+        ALT: () => {
+            const timestamp = this.consume(0, Lexer.Integer)
+            this.consume(0, Lexer.Identifier)
+            return this.ACTION(() => {
+                const result: Timestamp = {
+                    date: parseInt(timestamp.image.substr(0, 2)),
+                    hours: parseInt(timestamp.image.substr(2, 2)),
+                    minutes: parseInt(timestamp.image.substr(4, 2))
+                }
+                return result
+            })
+        },
+        GATE: () =>
+            this.LA(1).image.length === 6 && // 6-digit timestamp
+            this.LA(2).image.toUpperCase() === 'Z' // followed by ZULU
+    }]))
 
     /**
      * 15.4 AUTO
@@ -114,16 +126,44 @@ export class METARParser extends EmbeddedActionsParser {
      * 15.5 Wind
      */
     protected readonly windGroup = this.RULE('windGroup', () => {
-        const directionToken = this.OR([
-            { ALT: () => this.CONSUME(Lexer.Int3D) },
-            { ALT: () => this.CONSUME(Lexer.VRB) }
+        const firstToken: {
+            direction?: number
+            speed: number
+            variable: boolean
+        } = this.OR([
+            // TODO: better type guard for OR invocation
+            {
+                GATE: () => this.LA(1).image.length === 5,
+                ALT: () => {
+                    const token = this.CONSUME(Lexer.Integer)
+                    return this.ACTION(() => ({
+                        direction: parseInt(token.image.substr(0, 3)),
+                        speed: parseInt(token.image.substr(3, 2)),
+                        variable: false
+                    }))
+                }
+            },
+            {
+                GATE: () => this.LA(2).image.length === 2,
+                ALT: () => {
+                    this.CONSUME(Lexer.VRB)
+                    const token = this.CONSUME1(Lexer.Integer)
+                    return this.ACTION(() => ({
+                        direction: undefined,
+                        speed: parseInt(token.image),
+                        variable: true
+                    }))
+                }
+            }
         ])
-        const speedToken = this.CONSUME(Lexer.Int2D)
 
-        const gustToken = this.OPTION(() => {
+        const gust = this.OPTION(() => {
             this.CONSUME(Lexer.G)
-            const gustSpeedToken = this.CONSUME2(Lexer.Int2D)
-            return this.ACTION(() => parseInt(gustSpeedToken.image))
+            const token = this.OR1([{
+                ALT: () => this.CONSUME2(Lexer.Integer),
+                GATE: () => this.LA(1).image.length === 2
+            }])
+            return this.ACTION(() => parseInt(token.image))
         })
 
         const unitToken = this.OR2([
@@ -132,9 +172,15 @@ export class METARParser extends EmbeddedActionsParser {
         ])
 
         const variationToken = this.OPTION2(() => {
-            const lowToken = this.CONSUME2(Lexer.Int3D)
+            const lowToken = this.OR3([{
+                ALT: () => this.CONSUME3(Lexer.Integer),
+                GATE: () => this.LA(1).image.length === 3
+            }])
             this.CONSUME(Lexer.V)
-            const highToken = this.CONSUME3(Lexer.Int3D)
+            const highToken = this.OR4([{
+                ALT: () => this.CONSUME4(Lexer.Integer),
+                GATE: () => this.LA(1).image.length === 3
+            }])
             return this.ACTION(() => ({
                 low: parseInt(lowToken.image),
                 high: parseInt(highToken.image)
@@ -143,13 +189,11 @@ export class METARParser extends EmbeddedActionsParser {
 
         return this.ACTION(() => {
             const result: Wind = {
-                direction: directionToken.tokenType.name === Lexer.Int3D.name
-                    ? parseInt(directionToken.image)
-                    : undefined,
-                speed: parseInt(speedToken.image),
-                gust: gustToken,
+                direction: firstToken.variable ? undefined : firstToken.direction,
+                speed: firstToken.speed,
+                gust: gust,
                 unit: unitToken.image,
-                variable: directionToken.tokenType.name === Lexer.VRB.name,
+                variable: firstToken.variable,
                 variation: variationToken
             }
             return result
